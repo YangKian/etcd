@@ -215,6 +215,7 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
 	}
 	log.Printf("loading WAL at term %d and index %d", walsnap.Term, walsnap.Index)
+	// 返回一个待读取状态的 WAL，其第一条 log 是快照后的第一条日志
 	w, err := wal.Open(zap.NewExample(), rc.waldir, walsnap)
 	if err != nil {
 		log.Fatalf("raftexample: error loading wal (%v)", err)
@@ -226,24 +227,30 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 // replayWAL replays WAL entries into the raft instance.
 func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
+	// 加载快照
 	snapshot := rc.loadSnapshot()
+
+	// 使用快照创建 WAL 实例
 	w := rc.openWAL(snapshot)
-	_, st, ents, err := w.ReadAll()
+	_, st, ents, err := w.ReadAll() // 读取快照之后的所有日志
 	if err != nil {
 		log.Fatalf("raftexample: failed to read WAL (%v)", err)
 	}
+
+	// 创建一个 MemoryStorage 实例，实现了 Storage 接口
 	rc.raftStorage = raft.NewMemoryStorage()
 	if snapshot != nil {
-		rc.raftStorage.ApplySnapshot(*snapshot)
+		rc.raftStorage.ApplySnapshot(*snapshot) // 将快照数据加载到 MemoryStorage 中
 	}
 	rc.raftStorage.SetHardState(st)
 
 	// append to storage so raft starts at the right place in log
-	rc.raftStorage.Append(ents)
+	rc.raftStorage.Append(ents) // 将快照之后的日志追加到 MemoryStorage 中
 	// send nil once lastIndex is published so client knows commit channel is current
+	// 如果快照之后还有已经持久化的日志条目，则这些记录也需要回放至状态机中
 	if len(ents) > 0 {
 		rc.lastIndex = ents[len(ents)-1].Index
-	} else {
+	} else { // 如果没有持久化的日志条目，则向 commitC 提交 nil
 		rc.commitC <- nil
 	}
 	return w
@@ -258,6 +265,7 @@ func (rc *raftNode) writeError(err error) {
 }
 
 func (rc *raftNode) startRaft() {
+	// 创建 snapshotter，通过 snapshotterReady 通道返回创建的实例，用于管理快照
 	if !fileutil.Exist(rc.snapdir) {
 		if err := os.Mkdir(rc.snapdir, 0750); err != nil {
 			log.Fatalf("raftexample: cannot create dir for snapshot (%v)", err)
@@ -266,9 +274,11 @@ func (rc *raftNode) startRaft() {
 	rc.snapshotter = snap.New(zap.NewExample(), rc.snapdir)
 	rc.snapshotterReady <- rc.snapshotter
 
+	// 创建 WAL
 	oldwal := wal.Exist(rc.waldir)
-	rc.wal = rc.replayWAL()
+	rc.wal = rc.replayWAL() // 加载快照，并重放WAL
 
+	// 创建 raft.config
 	rpeers := make([]raft.Peer, len(rc.peers))
 	for i := range rpeers {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
@@ -283,6 +293,7 @@ func (rc *raftNode) startRaft() {
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
 
+	// 判断当前节点是首次启动还是重新启动
 	if oldwal {
 		rc.node = raft.RestartNode(c)
 	} else {
@@ -293,6 +304,7 @@ func (rc *raftNode) startRaft() {
 		rc.node = raft.StartNode(c, startPeers)
 	}
 
+	// 创建 transport 实例，该实例负责节点之间的网络通信
 	rc.transport = &rafthttp.Transport{
 		Logger:      zap.NewExample(),
 		ID:          types.ID(rc.id),
@@ -303,7 +315,10 @@ func (rc *raftNode) startRaft() {
 		ErrorC:      make(chan error),
 	}
 
+	// 启动 tansport 实例
 	rc.transport.Start()
+
+	// 与集群中的其他节点建立连接
 	for i := range rc.peers {
 		if i+1 != rc.id {
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
@@ -379,6 +394,7 @@ func (rc *raftNode) maybeTriggerSnapshot() {
 }
 
 func (rc *raftNode) serveChannels() {
+	// 获取快照
 	snap, err := rc.raftStorage.Snapshot()
 	if err != nil {
 		panic(err)
@@ -455,11 +471,13 @@ func (rc *raftNode) serveChannels() {
 }
 
 func (rc *raftNode) serveRaft() {
+	// 获取当前节点的 url
 	url, err := url.Parse(rc.peers[rc.id-1])
 	if err != nil {
 		log.Fatalf("raftexample: Failed parsing URL (%v)", err)
 	}
 
+	// 创建了一个 listener
 	ln, err := newStoppableListener(url.Host, rc.httpstopc)
 	if err != nil {
 		log.Fatalf("raftexample: Failed to listen rafthttp (%v)", err)

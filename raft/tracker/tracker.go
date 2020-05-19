@@ -22,7 +22,7 @@ import (
 	"go.etcd.io/etcd/raft/quorum"
 	pb "go.etcd.io/etcd/raft/raftpb"
 )
-
+// refer https://github.com/etcd-io/etcd/pull/10807
 // Config reflects the configuration tracked in a ProgressTracker.
 type Config struct {
 	Voters quorum.JointConfig
@@ -174,6 +174,7 @@ func (l matchAckIndexer) AckedIndex(id uint64) (quorum.Index, bool) {
 
 // Committed returns the largest log index known to be committed based on what
 // the voting members of the group have acknowledged.
+// 返回已经提交的 log 的最大索引
 func (p *ProgressTracker) Committed() uint64 {
 	return uint64(p.Voters.CommittedIndex(matchAckIndexer(p.Progress)))
 }
@@ -188,6 +189,8 @@ func insertionSort(sl []uint64) {
 }
 
 // Visit invokes the supplied closure for all tracked progresses in stable order.
+// refer to https://github.com/etcd-io/etcd/pull/11004, sort here just for test
+// TODO: ！！！！！！！！！！ 没看懂这里
 func (p *ProgressTracker) Visit(f func(id uint64, pr *Progress)) {
 	n := len(p.Progress)
 	// We need to sort the IDs and don't want to allocate since this is hot code.
@@ -212,6 +215,7 @@ func (p *ProgressTracker) Visit(f func(id uint64, pr *Progress)) {
 
 // QuorumActive returns true if the quorum is active from the view of the local
 // raft state machine. Otherwise, it returns false.
+// 检查是否有半数以上的节点处于活跃状态
 func (p *ProgressTracker) QuorumActive() bool {
 	votes := map[uint64]bool{}
 	p.Visit(func(id uint64, pr *Progress) {
@@ -225,6 +229,7 @@ func (p *ProgressTracker) QuorumActive() bool {
 }
 
 // VoterNodes returns a sorted slice of voters.
+// 返回排序后的 voterNodes 的集合
 func (p *ProgressTracker) VoterNodes() []uint64 {
 	m := p.Voters.IDs()
 	nodes := make([]uint64, 0, len(m))
@@ -264,6 +269,7 @@ func (p *ProgressTracker) RecordVote(id uint64, v bool) {
 
 // TallyVotes returns the number of granted and rejected Votes, and whether the
 // election outcome is known.
+// 统计投票数
 func (p *ProgressTracker) TallyVotes() (granted int, rejected int, _ quorum.VoteResult) {
 	// Make sure to populate granted/rejected correctly even if the Votes slice
 	// contains members no longer part of the configuration. This doesn't really

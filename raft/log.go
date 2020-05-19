@@ -23,24 +23,29 @@ import (
 
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// 保存最近一次快照后提交的数据
 	storage Storage
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
+	// 保存还未持久化的记录和快照
 	unstable unstable
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// 已提交记录的最高索引
 	committed uint64
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
+	// 被状态机使用的记录的最高索引
 	applied uint64
 
 	logger Logger
 
 	// maxNextEntsSize is the maximum number aggregate byte size of the messages
 	// returned from calls to nextEnts.
+	// 根据 https://github.com/etcd-io/etcd/pull/9982，maxNextEntsSize 参数是用来防止一次提交的 raft 日志过大导致OOM
 	maxNextEntsSize uint64
 }
 
@@ -62,11 +67,11 @@ func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raf
 		logger:          logger,
 		maxNextEntsSize: maxNextEntsSize,
 	}
-	firstIndex, err := storage.FirstIndex()
+	firstIndex, err := storage.FirstIndex() // 执行快照之后，第一条提交的数据
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}
-	lastIndex, err := storage.LastIndex()
+	lastIndex, err := storage.LastIndex() // 执行快照之后，最后一条提交的数据
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}
@@ -167,10 +172,13 @@ func (l *raftLog) hasNextEnts() bool {
 	return l.committed+1 > off
 }
 
+// 返回快照
 func (l *raftLog) snapshot() (pb.Snapshot, error) {
+	// 存在未持久化的快照，就返回这部分快照
 	if l.unstable.snapshot != nil {
 		return *l.unstable.snapshot, nil
 	}
+	// 否则返回数据库中最近一次快照
 	return l.storage.Snapshot()
 }
 
@@ -196,6 +204,7 @@ func (l *raftLog) lastIndex() uint64 {
 	return i
 }
 
+// 实际上是修改了节点的 committed，用传入的索引tocommit来更新
 func (l *raftLog) commitTo(tocommit uint64) {
 	// never decrease commit
 	if l.committed < tocommit {
@@ -210,6 +219,7 @@ func (l *raftLog) appliedTo(i uint64) {
 	if i == 0 {
 		return
 	}
+	// 有效的索引范围 applyIndex <= i <= commitIndex
 	if l.committed < i || i < l.applied {
 		l.logger.Panicf("applied(%d) is out of range [prevApplied(%d), committed(%d)]", i, l.applied, l.committed)
 	}
@@ -228,6 +238,7 @@ func (l *raftLog) lastTerm() uint64 {
 	return t
 }
 
+// 获取索引为 i 的日志的任期
 func (l *raftLog) term(i uint64) (uint64, error) {
 	// the valid term range is [index of dummy entry, last index]
 	dummyIndex := l.firstIndex() - 1
@@ -250,6 +261,7 @@ func (l *raftLog) term(i uint64) (uint64, error) {
 	panic(err) // TODO(bdarnell)
 }
 
+// 从索引 i 开始，返回 maxsize 条entry
 func (l *raftLog) entries(i, maxsize uint64) ([]pb.Entry, error) {
 	if i > l.lastIndex() {
 		return nil, nil
@@ -289,6 +301,7 @@ func (l *raftLog) matchTerm(i, term uint64) bool {
 }
 
 func (l *raftLog) maybeCommit(maxIndex, term uint64) bool {
+	// 传入的 maxIndex 大于节点的已提交索引，且传入的任期等于maxIndex对应的任期，才能提交
 	if maxIndex > l.committed && l.zeroTermOnErrCompacted(l.term(maxIndex)) == term {
 		l.commitTo(maxIndex)
 		return true
@@ -303,6 +316,7 @@ func (l *raftLog) restore(s pb.Snapshot) {
 }
 
 // slice returns a slice of log entries from lo through hi-1, inclusive.
+// 返回日志中[lo, hi - 1]范围内的日志，返回的总数据数不超过 maxSize
 func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	err := l.mustCheckOutOfBounds(lo, hi)
 	if err != nil {
@@ -312,7 +326,8 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 		return nil, nil
 	}
 	var ents []pb.Entry
-	if lo < l.unstable.offset {
+	if lo < l.unstable.offset { // 说明有一部分数据已经被持久化了
+		// 访问数据库取出需要的数据
 		storedEnts, err := l.storage.Entries(lo, min(hi, l.unstable.offset), maxSize)
 		if err == ErrCompacted {
 			return nil, err
@@ -324,13 +339,14 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 
 		// check if ents has reached the size limitation
 		if uint64(len(storedEnts)) < min(hi, l.unstable.offset)-lo {
+			// 说明需要查询的数据全部都已经持久化，直接返回这部分结果
 			return storedEnts, nil
 		}
 
 		ents = storedEnts
 	}
-	if hi > l.unstable.offset {
-		unstable := l.unstable.slice(max(lo, l.unstable.offset), hi)
+	if hi > l.unstable.offset { // 说明有一部分数据还未持久化
+		unstable := l.unstable.slice(max(lo, l.unstable.offset), hi) // 取出这部分数据
 		if len(ents) > 0 {
 			combined := make([]pb.Entry, len(ents)+len(unstable))
 			n := copy(combined, ents)

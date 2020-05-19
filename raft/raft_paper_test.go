@@ -380,6 +380,7 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 			conflicts++
 		}
 	}
+	t.Logf("the conflicts time is: %d", conflicts)
 
 	if g := float64(conflicts) / 1000; g > 0.3 {
 		t.Errorf("probability of conflicts = %v, want <= 0.3", g)

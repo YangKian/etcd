@@ -21,11 +21,14 @@ package tracker
 // ack is received.
 type Inflights struct {
 	// the starting index in the buffer
+	// 起始位置
 	start int
 	// number of inflights in the buffer
+	// 消息的数量
 	count int
 
 	// the size of the buffer
+	// 窗口的大小
 	size int
 
 	// buffer contains the index of the last entry
@@ -52,6 +55,7 @@ func (in *Inflights) Clone() *Inflights {
 // dispatched. Full() must be called prior to Add() to verify that there is room
 // for one more message, and consecutive calls to add Add() must provide a
 // monotonic sequence of indexes.
+// 具体原理看测试，写的非常清晰
 func (in *Inflights) Add(inflight uint64) {
 	if in.Full() {
 		panic("cannot add into a Full inflights")

@@ -18,7 +18,7 @@ import (
 	"math"
 	"strconv"
 )
-
+// refer https://github.com/etcd-io/etcd/pull/10779
 // Index is a Raft log position.
 type Index uint64
 

@@ -25,6 +25,9 @@ type unstable struct {
 	snapshot *pb.Snapshot
 	// all entries that have not yet been written to storage.
 	entries []pb.Entry
+	// entries 数组中第一条 entry 的实际 index
+	// 因为日志压缩和快照机制，执行快照后，包含在快照中的 entry 会被清理掉，但是 log 中 entry 的索引是单调递增的，所以用
+	// offset 来记录下之前被清理掉的最后一条 entry 的 index
 	offset  uint64
 
 	logger Logger
@@ -41,6 +44,7 @@ func (u *unstable) maybeFirstIndex() (uint64, bool) {
 
 // maybeLastIndex returns the last index if it has at least one
 // unstable entry or snapshot.
+// 如果存在未提交的entry，返回其最后一条索引，如果存在快照，返回快照元数据中记录的索引
 func (u *unstable) maybeLastIndex() (uint64, bool) {
 	if l := len(u.entries); l != 0 {
 		return u.offset + uint64(l) - 1, true
@@ -53,11 +57,15 @@ func (u *unstable) maybeLastIndex() (uint64, bool) {
 
 // maybeTerm returns the term of the entry at index i, if there
 // is any.
+// 如果索引 i 处 log 存在，则返回其任期
 func (u *unstable) maybeTerm(i uint64) (uint64, bool) {
+	// 如果 i 比 offset 小
 	if i < u.offset {
+		// 存在快照且快照的索引刚好等于待查询任期的索引i，才能找到对应的任期
 		if u.snapshot != nil && u.snapshot.Metadata.Index == i {
 			return u.snapshot.Metadata.Term, true
 		}
+		// 否则无法找到结果
 		return 0, false
 	}
 
